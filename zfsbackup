@@ -25,11 +25,13 @@ dataset="$1"
 target="$2"
 targetmachine="$3"
 
+HOLD_TAG=niksula:zfsbackup
+
 [ -z "$dataset" -o -z "$target" ] && { usage; exit 1; }
 
 release() {
     if [ -n "$last" ]; then
-        zfs release zfs-offsite $last
+        zfs release $HOLD_TAG $last
     fi
 }
 
@@ -68,7 +70,7 @@ for fs in $backup_datasets; do
     done
     # no snapshots apparently
     [ -n "$last" ] || { echo "W: skipping $fs: no unexcluded snapshots" ; continue; }
-    zfs hold zfs-offsite $last
+    zfs hold $HOLD_TAG $last
     # what's the incremental source, ie. latest snapshot the receiving side
     # has?
     from=$(echo "$remote_snaplist" | fgrep "${fs}@" | head -1)
@@ -90,9 +92,9 @@ for fs in $backup_datasets; do
     # Backup success, create new holds and release possible old ones. We
     # already have a hold on the local side, need to create one on the remote
     # side
-    on_target "zfs hold zfs-offsite '${target}/${last}' && [ -n '$from' ] && zfs release zfs-offsite '${target}/${fs}@${fromsnap}'"
+    on_target "zfs hold $HOLD_TAG '${target}/${last}' && [ -n '$from' ] && zfs release $HOLD_TAG '${target}/${fs}@${fromsnap}'"
     if [ -n "$from" ]; then
-        zfs release zfs-offsite "${fs}@${fromsnap}" || echo "local release of ${fs}@${fromsnap} failed" >&2
+        zfs release $HOLD_TAG "${fs}@${fromsnap}" || echo "local release of ${fs}@${fromsnap} failed" >&2
     fi
 done
 
