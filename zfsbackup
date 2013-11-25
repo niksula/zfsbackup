@@ -16,7 +16,7 @@ that set fi.hut.niksula:backup_exclude to the value 'on' will not be included.
 
 The running user should have ssh configuration set up properly and must have
 permission to use the following zfs commands:
- - hold,receive,release on the target host
+ - create,hold,mount,receive,release on the target host
  - hold,release,send on the local host
 without sudo/pfexec (use zfs allow)."
 }
@@ -33,9 +33,10 @@ release() {
     if [ -n "$last" ]; then
         zfs release $HOLD_TAG $last
     fi
+    exit 1
 }
 
-trap release INT TERM QUIT HUP 0
+trap release INT TERM HUP
 
 on_target() {
     if [ -z "$targetmachine" ]; then
@@ -82,7 +83,7 @@ for fs in $backup_datasets; do
             continue
         }
     else
-        echo "W: remote has no snapshots for $fs, starting over from $last"
+        echo "W: sending full $last"
         zfs send "$last" | on_target zfs recv -d "${target}/${pool}" || {
             echo "E: full recv '${last}' failed, keeping hold" >&2
             continue
@@ -98,4 +99,4 @@ for fs in $backup_datasets; do
     fi
 done
 
-trap '' INT QUIT TERM HUP 0
+trap '' INT TERM HUP
