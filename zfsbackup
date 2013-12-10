@@ -1,4 +1,6 @@
-#!/bin/sh
+#!/bin/sh -e
+
+set -u
 
 # zfs filesystems/snapshots allow space in their name but not tab or newline
 OLD_IFS=$IFS
@@ -10,13 +12,18 @@ usage() {
     echo "\
 usage: $0 dataset target [target_host]
 
-'dataset' will be backed up recursively under dataset 'target/POOLNAME' [on
-target_host using ssh] where POOLNAME is derived from 'dataset'. Child datasets
-that set fi.hut.niksula:backup_exclude to the value 'on' will not be included.
+'dataset' and all its descendants (including all existing snapshots) will be
+backed up under dataset 'target/POOLNAME' [on target_host using ssh] where
+POOLNAME is derived from 'dataset'.
+
+The dataset 'target/POOLNAME' should exist [on target_host] and should have
+readonly=on, as well as appropriate permission delegations (see below).
 
 The running user should have ssh configuration set up properly and must have
 permission to use the following zfs commands:
- - create,hold,mount,receive,release on the target host
+ - create,hold,mount,receive,release,rename,userprop on the target host
+   - quota,refquota,sharenfs,compression are also required until
+     https://www.illumos.org/issues/3753 is fixed
  - hold,release,send on the local host
 without sudo/pfexec (use zfs allow)."
 }
@@ -31,12 +38,10 @@ HOLD_TAG=niksula:zfsbackup
 
 release() {
     if [ -n "$last" ]; then
-        zfs release $HOLD_TAG $last
+        zfs release -r $HOLD_TAG $last
     fi
     exit 1
 }
-
-trap release INT TERM HUP
 
 on_target() {
     if [ -z "$targetmachine" ]; then
@@ -49,54 +54,49 @@ on_target() {
 pool=${dataset%%/*}
 [ -z "$pool" ] && { echo fatal: unable to determine pool name from $dataset; exit 1; }
 
-local_list=$(zfs list -Ho name,fi.hut.niksula:backup_exclude,type -S creation -t all -r $dataset) || { echo "fatal: could not get local dataset list" >&2; exit 1; }
-remote_snaplist=$(on_target zfs list -Ho name -S creation -t snapshot -r ${target}/${pool}) || { echo "fatal: could not get remote dataset list" >&2; exit 1; }
+local_snaplist=$(zfs list -Ho name -S creation -t snapshot -d 1 $dataset) || { echo "fatal: could not get local dataset list" >&2; exit 1; }
+# getting remote snapshot list can fail if the dataset does not exist on the
+# target
+remote_snaplist=$(on_target zfs list -Ho name -S creation -t snapshot -d 1 ${target}/${dataset}) || true
 
-# Extract non-snapshots and excluded datasets from local_list.
-backup_datasets=$(echo "$local_list" | awk -F'	' '$2 != "on" && $3 != "snapshot" { print $1 }')
-
-for fs in $backup_datasets; do
-    unset last
-    # list is sorted by creation date, return the first matching snap
-    echo "$local_list" | while read -r ds excl type; do
-        case "$ds" in
-            "$fs"@*)
-                # if snapshot is excluded skip it
-                [ "$excl" = "on" ] && continue
-                last="$ds"
-                lastsnap=${last#*@}
-                break
-                ;;
-        esac
-    done
+# list is sorted by creation date, return the first matching snap
+last=$(echo "$local_snaplist" | head -1)
+lastsnap=${last#*@}
+if [ -z "$last" ]; then
     # no snapshots apparently
-    [ -n "$last" ] || { echo "W: skipping $fs: no unexcluded snapshots" ; continue; }
-    zfs hold $HOLD_TAG $last
-    # what's the incremental source, ie. latest snapshot the receiving side
-    # has?
-    from=$(echo "$remote_snaplist" | fgrep "${fs}@" | head -1)
-    if [ -n "$from" ]; then
-        fromsnap=${from#*@}
-        [ "$lastsnap" = "$fromsnap" ] && { echo "W: $fs up to date at $fromsnap" >&2; continue; }
-        zfs send -i "$fromsnap" "$last" | on_target zfs recv -Fd "${target}/${pool}" || { 
-            echo "E: incremental recv '${last}' failed, keeping hold'" >&2
-            continue
-        }
-    else
-        echo "W: sending full $last"
-        zfs send "$last" | on_target zfs recv -d "${target}/${pool}" || {
-            echo "E: full recv '${last}' failed, keeping hold" >&2
-            continue
-        }
+    echo "fatal: cannot get latest snapshot" >&2
+fi
 
-    fi
-    # Backup success, create new holds and release possible old ones. We
-    # already have a hold on the local side, need to create one on the remote
-    # side
-    on_target "zfs hold $HOLD_TAG '${target}/${last}' && [ -n '$from' ] && zfs release $HOLD_TAG '${target}/${fs}@${fromsnap}'"
-    if [ -n "$from" ]; then
-        zfs release $HOLD_TAG "${fs}@${fromsnap}" || echo "local release of ${fs}@${fromsnap} failed" >&2
-    fi
-done
+# don't die if tag already exists
+zfs hold -r $HOLD_TAG $last || true
+trap release INT HUP TERM
+# what's the incremental source, ie. latest snapshot the receiving side has?
+from=$(echo "$remote_snaplist" | head -1)
+if [ -n "$from" ]; then
+    fromsnap=${from#*@}
+    # NOTE: don't use -F with recv here, since that will prune snapshots from
+    # the receiver side (and thus requires destroy permissions there). Instead
+    # the receiving dataset should be readonly=on to keep it from getting
+    # modified between backups.
+    zfs send -R -i "$fromsnap" "$last" | on_target zfs recv -ud "${target}/${pool}" || { 
+        echo "E: incremental backup '${last}' failed, releasing hold'" >&2
+        release
+    }
+else
+    echo "W: sending full $last"
+    # NOTE: we should *NOT* use recv -F here because it is potentially
+    # destructive!
+    zfs send -R "$last" | on_target zfs recv -ud "${target}/${pool}" || {
+        echo "E: full backup '${last}' failed, releasing hold" >&2
+        release
+    }
+fi
+# Backup success, create new holds and release possible old ones. We
+# already have a hold on the local side, need to create one on the remote
+# side
+on_target "zfs hold -r $HOLD_TAG '${target}/${last}' && [ -n '$from' ] && zfs release -r $HOLD_TAG '$from'" || true
+if [ -n "$from" ]; then
+    zfs release -r $HOLD_TAG "${dataset}@${fromsnap}" || echo "local release of ${dataset}@${fromsnap} failed" >&2
+fi
 
 trap '' INT TERM HUP
