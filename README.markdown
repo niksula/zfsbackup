@@ -32,7 +32,7 @@ recursive snapshot as of this writing).
 
 Recursive holds and send -R were chosen in favor of property-based exclude
 because it is simpler to create a well-performing system this way, since send
--R cand multiple snapshots over one pipe. Sending each fs separately, as is
+-R can send multiple snapshots over one pipe. Sending each fs separately, as is
 required for property-based exclude, would mean a pipe and thus an ssh
 connection for each filesystem (or ssh multiplexing, which SunSSH does not
 do), which is prohibitively slow at least for our use case of several thousands
