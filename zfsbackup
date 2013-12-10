@@ -25,7 +25,7 @@ permission to use the following zfs commands:
    - quota,refquota,sharenfs,compression are also required until
      https://www.illumos.org/issues/3753 is fixed
  - hold,release,send on the local host
-without sudo/pfexec (use zfs allow)."
+without sudo/pfexec (use zfs allow)." >&2
 }
 
 dataset="$1"
@@ -52,7 +52,7 @@ on_target() {
 }
 
 pool=${dataset%%/*}
-[ -z "$pool" ] && { echo fatal: unable to determine pool name from $dataset; exit 1; }
+[ -z "$pool" ] && { echo "fatal: unable to determine pool name from $dataset" >&2; exit 1; }
 
 local_snaplist=$(zfs list -Ho name -S creation -t snapshot -d 1 $dataset) || { echo "fatal: could not get local dataset list" >&2; exit 1; }
 # getting remote snapshot list can fail if the dataset does not exist on the
@@ -83,7 +83,7 @@ if [ -n "$from" ]; then
         release
     }
 else
-    echo "W: sending full $last"
+    echo "W: sending full $last" >&2
     # NOTE: we should *NOT* use recv -F here because it is potentially
     # destructive!
     zfs send -R "$last" | on_target zfs recv -ud "${target}/${pool}" || {
