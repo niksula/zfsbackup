@@ -7,6 +7,9 @@ source host(s), and does not require a component running on the target host. If
 you want a backup solution that runs from a central host, take a look at
 [Zetaback](http://labs.omniti.com/labs/zetaback).
 
+Tested on illumos (OmniOS), possibly modifiable to run on other systems as
+well.
+
 You are required to create snapshots of your filesystems via some other method
 (eg. cron jobs). This script only sends existing snapshots to the target backup
 host.
