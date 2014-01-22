@@ -1,7 +1,5 @@
 #!/bin/sh -e
 
-set -u
-
 # zfs filesystems/snapshots allow space in their name but not tab or newline
 OLD_IFS=$IFS
 IFS=$(printf '\n\t')
@@ -22,8 +20,9 @@ readonly=on, as well as appropriate permission delegations (see below).
 The running user should have ssh configuration set up properly and must have
 permission to use the following zfs commands:
  - create,hold,mount,receive,release,rename,userprop on the target host
-   - quota,refquota,sharenfs,compression are also required until
-     https://www.illumos.org/issues/3753 is fixed
+   - property permissions such as
+     aclmode,aclinherit,quota,refquota,sharenfs,compression are also required, at
+     least until https://www.illumos.org/issues/3753 is fixed
  - hold,release,send on the local host
 without sudo/pfexec (use zfs allow)." >&2
 }
@@ -31,6 +30,8 @@ without sudo/pfexec (use zfs allow)." >&2
 dataset="$1"
 target="$2"
 targetmachine="$3"
+
+set -u
 
 HOLD_TAG=niksula:zfsbackup
 
