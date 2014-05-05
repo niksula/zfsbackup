@@ -37,9 +37,18 @@ HOLD_TAG=niksula:zfsbackup
 
 [ -z "$dataset" -o -z "$target" ] && { usage; exit 1; }
 
-release() {
+cleanup() {
     if [ -n "$last" ]; then
         zfs release -r $HOLD_TAG $last
+        # If we did a partial send (not all descendant filesystems), we must
+        # destroy the sent snapshots on the target host or the next send will
+        # fail due to some datasets' most recent snapshot not matching the
+        # incremental source. We might not have destroy permissions on the
+        # target host, though, so output an error if this fails.
+        if ! on_target zfs destroy -r "${target}/${last}"; then
+            echo "ACTION REQUIRED: 'zfs destroy -r ${target}/${last}' on"\
+                "${targetmachine:-localhost} or next backup run may fail" >&2
+        fi
     fi
     exit 1
 }
@@ -70,7 +79,7 @@ fi
 
 # don't die if tag already exists
 zfs hold -r $HOLD_TAG $last || true
-trap release INT HUP TERM
+trap cleanup INT HUP TERM
 # what's the incremental source, ie. latest snapshot the receiving side has?
 from=$(echo "$remote_snaplist" | head -1)
 if [ -n "$from" ]; then
@@ -80,16 +89,16 @@ if [ -n "$from" ]; then
     # the receiving dataset should be readonly=on to keep it from getting
     # modified between backups.
     zfs send -R -i "$fromsnap" "$last" | on_target zfs recv -ud "${target}/${pool}" || { 
-        echo "E: incremental backup '${last}' failed, releasing hold'" >&2
-        release
+        echo "E: incremental backup '${last}' failed, cleaning up...'" >&2
+        cleanup
     }
 else
     echo "W: sending full $last" >&2
     # NOTE: we should *NOT* use recv -F here because it is potentially
     # destructive!
     zfs send -R "$last" | on_target zfs recv -ud "${target}/${pool}" || {
-        echo "E: full backup '${last}' failed, releasing hold" >&2
-        release
+        echo "E: full backup '${last}' failed, cleaning up..." >&2
+        cleanup
     }
 fi
 # Backup success, create new holds and release possible old ones. We
