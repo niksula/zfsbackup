@@ -45,12 +45,18 @@ cleanup() {
         # fail due to some datasets' most recent snapshot not matching the
         # incremental source. We might not have destroy permissions on the
         # target host, though, so output an error if this fails.
-        if ! on_target zfs destroy -r "${target}/${last}"; then
+        if ! on_target "if zfs list -Ho name ${target}/${last} >/dev/null 2>&1; then
+            zfs destroy -r ${target}/${last}
+        fi"; then
             echo "ACTION REQUIRED: 'zfs destroy -r ${target}/${last}' on"\
-                "${targetmachine:-localhost} or next backup run may fail" >&2
+                "${targetmachine:-localhost} or next backup run will fail" >&2
         fi
     fi
     exit 1
+}
+
+has_tag() {
+    awk '$2 == "'"$HOLD_TAG"'" { ok = 1; exit; } END { if (!ok) exit(1); }'
 }
 
 on_target() {
@@ -67,7 +73,7 @@ pool=${dataset%%/*}
 local_snaplist=$(zfs list -Ho name -S creation -t snapshot -d 1 $dataset) || { echo "fatal: could not get local dataset list" >&2; exit 1; }
 # getting remote snapshot list can fail if the dataset does not exist on the
 # target
-remote_snaplist=$(on_target zfs list -Ho name -S creation -t snapshot -d 1 ${target}/${dataset}) || true
+remote_snaplist=$(on_target zfs list -Ho name,userrefs -S creation -t snapshot -d 1 ${target}/${dataset}) || true
 
 # list is sorted by creation date, return the first matching snap
 last=$(echo "$local_snaplist" | head -1)
@@ -75,15 +81,42 @@ lastsnap=${last#*@}
 if [ -z "$last" ]; then
     # no snapshots apparently
     echo "fatal: cannot get latest snapshot" >&2
+    exit 1
 fi
 
-# don't die if tag already exists
-zfs hold -r $HOLD_TAG $last || true
+# zfs hold fails if tag already exists, so check for it
+if ! zfs holds -H $last | has_tag; then
+    zfs hold -r $HOLD_TAG $last
+fi
+# what's the incremental source, ie. latest snapshot *with our tag* that the
+# remote side has?
+from=$(echo "$remote_snaplist" | awk '/$2 != "0"/ { print $1; exit(0); }')
+remote_latest=$(echo "$remote_snaplist" | head -1 | cut -f1)
+if [ "$from" != "$remote_latest" ] ||
+    ! on_target zfs holds ${target}/${from} | has_tag
+then
+    echo "\
+E: newest remote snapshot:
+    $remote_latest
+is not held with ${HOLD_TAG}; it is likely from a partially failed
+previous send. The newest remote snapshot that has userrefs is:
+$(on_target zfs holds $from)" >&2
+    exit 1
+fi
 trap cleanup INT HUP TERM
-# what's the incremental source, ie. latest snapshot the receiving side has?
-from=$(echo "$remote_snaplist" | head -1)
 if [ -n "$from" ]; then
+    if ! zfs holds -H ${dataset}/${fromsnap} | has_tag; then
+        echo "W: ${dataset}/${fromsnap} is not held; sending incremental anyway" >&2
+    fi
     fromsnap=${from#*@}
+    # https://www.illumos.org/issues/4718
+    if ! zfs list -Ho name "${dataset}/${fromsnap}" >/dev/null 2>&1; then
+        echo "\
+E: local incremental source:
+    ${dataset}/${fromsnap}
+does not exist. Refusing to send full - resolve the situation manually (eg.
+find an incremental source that exists on both source and target hosts)." >&2
+    fi
     # NOTE: don't use -F with recv here, since that will prune snapshots from
     # the receiver side (and thus requires destroy permissions there). Instead
     # the receiving dataset should be readonly=on to keep it from getting
