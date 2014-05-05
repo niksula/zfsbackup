@@ -8,7 +8,9 @@ PATH=$PATH:/usr/sbin
 
 usage() {
     echo "\
-usage: $0 dataset target [target_host]
+usage: [-vn] $0 dataset target [target_host]
+    -v  passed to zfs recv
+    -n  passed to zfs recv
 
 'dataset' and all its descendants (including all existing snapshots) will be
 backed up under dataset 'target/POOLNAME' [on target_host using ssh] where
@@ -26,6 +28,16 @@ permission to use the following zfs commands:
  - hold,release,send on the local host
 without sudo/pfexec (use zfs allow)." >&2
 }
+
+recvopts=
+while getopts nv flag; do
+    case $flag in
+        n) recvopts="${recvopts} -n";;
+        v) recvopts="${recvopts} -v";;
+        ?) usage; exit 1;;
+    esac
+done
+shift $((OPTIND - 1))
 
 dataset="$1"
 target="$2"
@@ -121,7 +133,7 @@ find an incremental source that exists on both source and target hosts)." >&2
     # the receiver side (and thus requires destroy permissions there). Instead
     # the receiving dataset should be readonly=on to keep it from getting
     # modified between backups.
-    zfs send -R -i "$fromsnap" "$last" | on_target zfs recv -ud "${target}/${pool}" || { 
+    zfs send -R -i "$fromsnap" "$last" | on_target zfs recv $recvopts -ud "${target}/${pool}" || { 
         echo "E: incremental backup '${last}' failed, cleaning up...'" >&2
         cleanup
     }
@@ -129,7 +141,7 @@ else
     echo "W: sending full $last" >&2
     # NOTE: we should *NOT* use recv -F here because it is potentially
     # destructive!
-    zfs send -R "$last" | on_target zfs recv -ud "${target}/${pool}" || {
+    zfs send -R "$last" | on_target zfs recv $recvopts -ud "${target}/${pool}" || {
         echo "E: full backup '${last}' failed, cleaning up..." >&2
         cleanup
     }
