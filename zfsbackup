@@ -9,7 +9,7 @@ PATH=$PATH:/usr/sbin
 usage() {
     echo "\
 usage: [-vn] $0 dataset target [target_host]
-    -v  be verbose (passed to zfs recv, and send if -n)
+    -v  be verbose (passes -P to zfs send)
     -n  dry-run mode (passed to zfs send)
 
 'dataset' and all its descendants (including all existing snapshots) will be
@@ -29,19 +29,18 @@ permission to use the following zfs commands:
 without sudo/pfexec (use zfs allow)." >&2
 }
 
-vflg=false
-nflg=false
+set -u
+
+dryrun=false
+nflg=
+vflg=
 while getopts nv flag; do
     case $flag in
-        n) nflg=true;;
-        v) vflg=true;;
+        n) dryrun=true; nflg="-n";;
+        v) verbose=true; vflg="-P";;
         ?) usage; exit 1;;
     esac
 done
-recvopts=
-sendopts=
-$vflg && recvopts="-v" && $nflg && sendopts="-v"
-$nflg && sendopts="$sendopts -n"
 
 shift $((OPTIND - 1))
 
@@ -49,32 +48,37 @@ dataset="$1"
 target="$2"
 targetmachine="$3"
 
-set -u
-
 HOLD_TAG=niksula:zfsbackup
 
 [ -z "$dataset" -o -z "$target" ] && { usage; exit 1; }
 
 cleanup() {
-    if [ -n "$last" ]; then
+    # We can recover from partially sent incrementals on next run, but if this
+    # was a partially sent full backup, next run will have no consistent
+    # incremental source. Since we would have to send the entire dataset again
+    # anyway, there's little point in trying to recover.
+    if ! $incremental; then
+        echo "\
+Full backup failed (possibly partially). Remove the target dataset
+    ${target}/${dataset}
+before retrying." >&2
         zfs release -r $HOLD_TAG $last
-        # If we did a partial send (not all descendant filesystems), we must
-        # destroy the sent snapshots on the target host or the next send will
-        # fail due to some datasets' most recent snapshot not matching the
-        # incremental source. We might not have destroy permissions on the
-        # target host, though, so output an error if this fails.
-        if ! on_target "if zfs list -Ho name ${target}/${last} >/dev/null 2>&1; then
-            zfs destroy -r ${target}/${last}
-        fi"; then
-            echo "ACTION REQUIRED: 'zfs destroy -r ${target}/${last}' on"\
-                "${targetmachine:-localhost} or next backup run will fail" >&2
-        fi
+    else
+        echo "\
+Incremental backup failed (possibly partially). Recovery will be attempted on
+next run by sending all intermediate snapshots after this failed run's
+incremental source
+    $from
+Keeping local holds on:
+    ${dataset}@${fromsnap}
+    $last
+- the latter can be manually released after successful recovery run." >&2
     fi
     exit 1
 }
 
-has_tag() {
-    awk '$2 == "'"$HOLD_TAG"'" { ok = 1; exit; } END { if (!ok) exit(1); }'
+print_tagged() {
+    awk '$2 == "'"$HOLD_TAG"'" { print $1 }'
 }
 
 on_target() {
@@ -88,76 +92,120 @@ on_target() {
 pool=${dataset%%/*}
 [ -z "$pool" ] && { echo "fatal: unable to determine pool name from $dataset" >&2; exit 1; }
 
+incremental=true
+
 local_snaplist=$(zfs list -Ho name -S creation -t snapshot -d 1 $dataset) || { echo "fatal: could not get local dataset list" >&2; exit 1; }
 # getting remote snapshot list can fail if the dataset does not exist on the
 # target
 remote_snaplist=$(on_target zfs list -Ho name,userrefs -S creation -t snapshot -d 1 ${target}/${dataset}) || true
+# whether or not if failed, if we don't have a list of snapshots we cannot send
+# incremental
+[ -z "$remote_snaplist" ] && incremental=false
 
 # list is sorted by creation date, return the first matching snap
 last=$(echo "$local_snaplist" | head -1)
-lastsnap=${last#*@}
+lastsnap="${last#*@}"
 if [ -z "$last" ]; then
-    # no snapshots apparently
-    echo "fatal: cannot get latest snapshot" >&2
+    echo "\
+fatal: cannot get latest local snapshot of $dataset; are there any?" >&2
     exit 1
 fi
 
 # zfs hold fails if tag already exists, so check for it
-if ! zfs holds -H $last | has_tag; then
-    zfs hold -r $HOLD_TAG $last
-fi
-# what's the incremental source, ie. latest snapshot *with our tag* that the
-# remote side has?
-from=$(echo "$remote_snaplist" | awk '/$2 != "0"/ { print $1; exit(0); }')
-remote_latest=$(echo "$remote_snaplist" | head -1 | cut -f1)
-if [ "$from" != "$remote_latest" ] ||
-    ! on_target zfs holds ${target}/${from} | has_tag
-then
-    echo "\
-E: newest remote snapshot:
-    $remote_latest
-is not held with ${HOLD_TAG}; it is likely from a partially failed
-previous send. The newest remote snapshot that has userrefs is:
-$(on_target zfs holds $from)" >&2
-    exit 1
+if [ -z "$(zfs holds -H "$last" | print_tagged)" ]; then
+    zfs hold -r "$HOLD_TAG" "$last"
 fi
 trap cleanup INT HUP TERM
-if [ -n "$from" ]; then
-    if ! zfs holds -H ${dataset}/${fromsnap} | has_tag; then
-        echo "W: ${dataset}/${fromsnap} is not held; sending incremental anyway" >&2
-    fi
-    fromsnap=${from#*@}
-    # https://www.illumos.org/issues/4718
-    if ! zfs list -Ho name "${dataset}/${fromsnap}" >/dev/null 2>&1; then
+if $incremental; then
+    remote_latest=$(echo "$remote_snaplist" | head -1 | cut -f1)
+    # The incremental source should be the latest snapshot on the remote side
+    # which has a hold with our tag.
+    remote_held=$(echo "$remote_snaplist" | awk '$2 != 0 { print $1 }')
+    # Ask for holds on all snapshots with userrefs > 0 and get the first that
+    # has our tag.
+    tagged=$(echo "$remote_held" | on_target xargs zfs holds -H | print_tagged)
+    from=$(echo "$tagged" | head -1)
+    if [ -z "$from" ]; then
         echo "\
-E: local incremental source:
-    ${dataset}/${fromsnap}
-does not exist. Refusing to send full - resolve the situation manually (eg.
-find an incremental source that exists on both source and target hosts)." >&2
+fatal: failed to determine incremental source from existing remote
+snapshots (must be held with '$HOLD_TAG')" >&2
+        exit 1;
+    fi
+    fromsnap="${from#*@}"
+    # by default, don't send intermediary snapshots
+    iflag="-i"
+    # https://www.illumos.org/issues/4718
+    if ! zfs list -Ho name "${dataset}@${fromsnap}" >/dev/null 2>&1; then
+        echo "\
+fatal: local incremental source
+    ${dataset}@${fromsnap}
+does not exist. Manual intervention required." >&2
+        exit 1
+    fi
+    if [ -z "$(zfs holds -H "${dataset}@${fromsnap}" | print_tagged)" ]; then
+        echo "\
+W: local incremental source
+    ${dataset}@${fromsnap}
+is not held; holding it and sending incremental anyway" >&2
+        zfs hold -r $HOLD_TAG "${dataset}@${fromsnap}"
+    fi
+    if [ "$from" != "$remote_latest" ]; then
+        # remote has more recent snapshots than the incremental source;
+        # something is wrong. Either the previous send was incomplete (only
+        # some datasets' snapshots were sent), or something else has modified
+        # the target's snapshots. We can't really distinguish between these
+        # cases before actually trying the send, but we can recover from the
+        # first by either retrying the send with the same snapshot arguments as
+        # before (which would stagger backing up our latest data), or sending
+        # intermediary snapshots as well (which works, but is a bit slower).
+        echo "\
+W: newest remote snapshot
+    $remote_latest
+does not have the hold tag '${HOLD_TAG}'. Recovery may succeed if this
+discrepancy was caused by the previous send completing partially. Attempting
+recovery by sending intermediate snapshots between
+    $fromsnap
+    and ${last}" >&2
+        iflag="-I"
     fi
     # NOTE: don't use -F with recv here, since that will prune snapshots from
     # the receiver side (and thus requires destroy permissions there). Instead
     # the receiving dataset should be readonly=on to keep it from getting
     # modified between backups.
-    zfs send $sendopts -R -i "$fromsnap" "$last" | on_target zfs recv $recvopts -ud "${target}/${pool}" || {
-        echo "E: incremental backup '${last}' failed, cleaning up...'" >&2
-        cleanup
+    zfs send $nflg $vflg -R $iflag "$fromsnap" "$last" | on_target zfs recv -ud "${target}/${pool}" || {
+        if $dryrun; then
+            echo "dry run; ignoring recv failure." >&2
+        else
+            echo "E: incremental backup '${last}' failed, cleaning up...'" >&2
+            cleanup
+        fi
     }
 else
     echo "W: sending full $last" >&2
     # NOTE: we should *NOT* use recv -F here because it is potentially
     # destructive!
-    zfs send $sendopts -R "$last" | on_target zfs recv $recvopts -ud "${target}/${pool}" || {
-        echo "E: full backup '${last}' failed, cleaning up..." >&2
-        cleanup
+    zfs send $nflg $vflg -R "$last" | on_target zfs recv -ud "${target}/${pool}" || {
+        if $dryrun; then
+            echo "dry run; ignoring recv failure." >&2
+        else
+            echo "E: full backup '${last}' failed, cleaning up..." >&2
+            cleanup
+        fi
     }
 fi
+trap '' INT TERM HUP
 # Backup success, create new holds and release possible old ones. We
 # already have a hold on the local side, need to create one on the remote
 # side
-on_target "zfs hold -r $HOLD_TAG '${target}/${last}' && [ -n '$from' ] && zfs release -r $HOLD_TAG '$from'" || true
-if [ -n "$from" ]; then
-    zfs release -r $HOLD_TAG "${dataset}@${fromsnap}" || echo "local release of ${dataset}@${fromsnap} failed" >&2
+# NB: hold seems to succeed on non-existing snapshots so check for that!
+if ! $dryrun; then
+    on_target "zfs list -Ho name '${target}/$last' >/dev/null && zfs hold -r $HOLD_TAG '${target}/${last}' && $incremental && zfs release -r $HOLD_TAG '$from'" || {
+        echo "\
+E: backup success, but failed to hold remote snapshot
+    ${target}/${last}
+Data may be resent on the next run or it may fail entirely." >&2
+    }
+    if $incremental; then
+        zfs release -r $HOLD_TAG "${dataset}@${fromsnap}" || echo "W: local release of ${dataset}@${fromsnap} failed" >&2
+    fi
 fi
-
-trap '' INT TERM HUP
