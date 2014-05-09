@@ -123,6 +123,10 @@ if $incremental; then
     remote_held=$(echo "$remote_snaplist" | awk '$2 != 0 { print $1 }')
     # Ask for holds on all snapshots with userrefs > 0 and get the first that
     # has our tag.
+    if [ -z "$remote_held" ]; then
+        echo "fatal: remote has snapshots, but none are held"
+        exit 1
+    fi
     tagged=$(echo "$remote_held" | on_target xargs zfs holds -H | print_tagged)
     from=$(echo "$tagged" | head -1)
     if [ -z "$from" ]; then
@@ -132,6 +136,10 @@ snapshots (must be held with '$HOLD_TAG')" >&2
         exit 1;
     fi
     fromsnap="${from#*@}"
+    if [ "$fromsnap" = "$lastsnap" ]; then
+        echo "fatal: incremental source $fromsnap and $last are the same"
+        exit 1
+    fi
     # by default, don't send intermediary snapshots
     iflag="-i"
     # https://www.illumos.org/issues/4718
