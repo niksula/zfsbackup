@@ -199,7 +199,7 @@ trap '' INT TERM HUP
 # side
 # NB: hold seems to succeed on non-existing snapshots so check for that!
 if ! $dryrun; then
-    on_target "zfs list -Ho name '${target}/$last' >/dev/null && zfs hold -r $HOLD_TAG '${target}/${last}' && $incremental && zfs release -r $HOLD_TAG '$from'" || {
+    on_target sh -c "zfs list -Ho name '${target}/$last' >/dev/null && zfs hold -r $HOLD_TAG '${target}/${last}'" || {
         echo "\
 E: backup success, but failed to hold remote snapshot
     ${target}/${last}
@@ -207,5 +207,6 @@ Data may be resent on the next run or it may fail entirely." >&2
     }
     if $incremental; then
         zfs release -r $HOLD_TAG "${dataset}@${fromsnap}" || echo "W: local release of ${dataset}@${fromsnap} failed" >&2
+        on_target zfs release -r $HOLD_TAG "$from"
     fi
 fi
