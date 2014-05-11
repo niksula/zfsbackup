@@ -211,7 +211,7 @@ trap '' INT TERM HUP
 # side
 # NB: hold seems to succeed on non-existing snapshots so check for that!
 if ! $dryrun; then
-    on_target sh -c "zfs list -Ho name '${target}/$last' >/dev/null && zfs hold -r $HOLD_TAG '${target}/${last}'" || die "\
+    on_target "zfs list -Ho name '${target}/$last' >/dev/null && zfs hold -r $HOLD_TAG '${target}/${last}'" || die "\
 E: backup success, but failed to hold remote snapshot
     ${target}/${last}
 Data may be resent on the next run or it may fail entirely."
