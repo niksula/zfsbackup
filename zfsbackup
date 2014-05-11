@@ -134,8 +134,10 @@ if $incremental; then
     if [ -z "$remote_held" ]; then
         die "fatal: remote has snapshots, but none are held"
     fi
+    # NOTE: zfs holds seems to sort its output instead of printing lines in
+    # input order. TODO figure out what key it sorts on and why
     tagged=$(echo "$remote_held" | on_target xargs zfs holds -H | print_tagged)
-    from=$(echo "$tagged" | head -1)
+    from=$(echo "$tagged" | tail -1)
     if [ -z "$from" ]; then
         die "\
 fatal: failed to determine incremental source from existing remote
