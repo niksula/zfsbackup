@@ -77,6 +77,14 @@ Keeping local holds on:
     exit 1
 }
 
+die() {
+    echo "$@" >&2
+    if $incremental && [ -n $last ]; then
+        zfs release -r "$HOLD_TAG" "$last"
+    fi
+    exit 1
+}
+
 print_tagged() {
     awk '$2 == "'"$HOLD_TAG"'" { print $1 }'
 }
@@ -124,31 +132,27 @@ if $incremental; then
     # Ask for holds on all snapshots with userrefs > 0 and get the first that
     # has our tag.
     if [ -z "$remote_held" ]; then
-        echo "fatal: remote has snapshots, but none are held"
-        exit 1
+        die "fatal: remote has snapshots, but none are held"
     fi
     tagged=$(echo "$remote_held" | on_target xargs zfs holds -H | print_tagged)
     from=$(echo "$tagged" | head -1)
     if [ -z "$from" ]; then
-        echo "\
+        die "\
 fatal: failed to determine incremental source from existing remote
-snapshots (must be held with '$HOLD_TAG')" >&2
-        exit 1;
+snapshots (must be held with '$HOLD_TAG')"
     fi
     fromsnap="${from#*@}"
     if [ "$fromsnap" = "$lastsnap" ]; then
-        echo "fatal: incremental source $fromsnap and $last are the same"
-        exit 1
+        die "fatal: incremental source $fromsnap and $last are the same"
     fi
     # by default, don't send intermediary snapshots
     iflag="-i"
     # https://www.illumos.org/issues/4718
     if ! zfs list -Ho name "${dataset}@${fromsnap}" >/dev/null 2>&1; then
-        echo "\
+        die "\
 fatal: local incremental source
     ${dataset}@${fromsnap}
-does not exist. Manual intervention required." >&2
-        exit 1
+does not exist. Manual intervention required."
     fi
     if [ -z "$(zfs holds -H "${dataset}@${fromsnap}" | print_tagged)" ]; then
         echo "\
