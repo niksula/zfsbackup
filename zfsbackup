@@ -103,11 +103,24 @@ pool=${dataset%%/*}
 incremental=true
 
 local_snaplist=$(zfs list -Ho name -S creation -t snapshot -d 1 $dataset) || { echo "fatal: could not get local dataset list" >&2; exit 1; }
-# getting remote snapshot list can fail if the dataset does not exist on the
-# target
-remote_snaplist=$(on_target zfs list -Ho name,userrefs -S creation -t snapshot -d 1 ${target}/${dataset}) || true
-# whether or not if failed, if we don't have a list of snapshots we cannot send
-# incremental
+# getting remote snapshot list can fail with exit 1 if the dataset does not
+# exist on the target
+if remote_snaplist=$(on_target zfs list -Ho name,userrefs -S creation -t snapshot -d 1 ${target}/${dataset}); then
+    # we can't negate the if condition here because that will affect $?, so
+    # this is required
+    :
+else
+    status=$?
+    if [ $status -eq 1 ]; then
+        remote_snaplist=
+    else
+        # something else went wrong (perhaps the ssh connection failed); bail
+        echo "fatal: could not get remote snapshot list (exit status $status)" >&2
+        exit 1
+    fi
+fi
+# if remote_snaplist is empty here, either target has no snapshots, or the
+# dataset doesn't exist, so send incremental.
 [ -z "$remote_snaplist" ] && incremental=false
 
 # list is sorted by creation date, return the first matching snap
