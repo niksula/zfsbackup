@@ -44,9 +44,11 @@ done
 
 shift $((OPTIND - 1))
 
+set +u
 dataset="$1"
 target="$2"
 targetmachine="$3"
+set -u
 
 HOLD_TAG=niksula:zfsbackup
 
