@@ -8,7 +8,7 @@ PATH=$PATH:/usr/sbin
 
 usage() {
     echo "\
-usage: [-vn] $0 dataset target [target_host]
+usage: $0 [-vn] dataset target [target_host]
     -v  be verbose (passes -P to zfs send)
     -n  dry-run mode (passed to zfs send)
 
