@@ -122,7 +122,7 @@ else
     fi
 fi
 # if remote_snaplist is empty here, either target has no snapshots, or the
-# dataset doesn't exist, so send incremental.
+# dataset doesn't exist, so send a full backup.
 [ -z "$remote_snaplist" ] && incremental=false
 
 # list is sorted by creation date, return the first matching snap
