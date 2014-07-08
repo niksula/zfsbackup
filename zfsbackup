@@ -226,9 +226,9 @@ trap '' INT TERM HUP
 # Backup success, create new holds and release possible old ones. We
 # already have a hold on the local side, need to create one on the remote
 # side
-# NB: hold seems to succeed on non-existing snapshots so check for that!
 if ! $dryrun; then
-    on_target "zfs list -Ho name '${target}/$last' >/dev/null && zfs hold -r $HOLD_TAG '${target}/${last}'" || die "\
+    # NB: hold seems to succeed on non-existing snapshots so check for that!
+    on_target zfs list -Ho name "${target}/$last" >/dev/null && on_target zfs hold -r $HOLD_TAG "${target}/${last}" || die "\
 E: backup success, but failed to hold remote snapshot
     ${target}/${last}
 Data may be resent on the next run or it may fail entirely."
