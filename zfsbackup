@@ -9,7 +9,7 @@ PATH=$PATH:/usr/sbin
 usage() {
     echo "\
 usage: $0 [-vn] dataset target [target_host]
-    -v  be verbose (passes -P to zfs send)
+    -v  be verbose (passed to zfs send)
     -n  dry-run mode (passed to zfs send)
 
 'dataset' and all its descendants (including all existing snapshots) will be
@@ -37,7 +37,7 @@ vflg=
 while getopts nv flag; do
     case $flag in
         n) dryrun=true; nflg="-n";;
-        v) verbose=true; vflg="-P";;
+        v) vflg="-v";;
         ?) usage; exit 1;;
     esac
 done
