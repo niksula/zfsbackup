@@ -64,7 +64,7 @@ cleanup() {
 Full backup failed (possibly partially). Remove the target dataset
     ${target}/${dataset}
 before retrying." >&2
-        zfs release -r $HOLD_TAG $last
+        $dryrun || zfs release -r $HOLD_TAG $last
     else
         echo "\
 Incremental backup failed (possibly partially). Recovery will be attempted on
@@ -82,7 +82,7 @@ Keeping local holds on:
 die() {
     echo "$@" >&2
     if $incremental && [ -n $last ]; then
-        zfs release -r "$HOLD_TAG" "$last"
+        $dryrun || zfs release -r "$HOLD_TAG" "$last"
     fi
     exit 1
 }
@@ -136,7 +136,7 @@ fi
 
 # zfs hold fails if tag already exists, so check for it
 if [ -z "$(zfs holds -H "$last" | print_tagged)" ]; then
-    zfs hold -r "$HOLD_TAG" "$last"
+    $dryrun || zfs hold -r "$HOLD_TAG" "$last"
 fi
 trap cleanup INT HUP TERM
 if $incremental; then
@@ -176,7 +176,7 @@ does not exist. Manual intervention required."
 W: local incremental source
     ${dataset}@${fromsnap}
 is not held; holding it and sending incremental anyway" >&2
-        zfs hold -r $HOLD_TAG "${dataset}@${fromsnap}"
+        $dryrun || zfs hold -r $HOLD_TAG "${dataset}@${fromsnap}"
     fi
     if [ "$from" != "$remote_latest" ]; then
         # remote has more recent snapshots than the incremental source;
