@@ -8,9 +8,10 @@ PATH=$PATH:/usr/sbin
 
 usage() {
     echo "\
-usage: $0 [-vn] dataset target [target_host]
+usage: $0 [-vn] [-f FILTER] dataset target [target_host]
     -v  be verbose (passed to zfs send)
     -n  dry-run mode (passed to zfs send)
+    -f  snapshot name filter; only consider snapshots that contain this pattern
 
 'dataset' and all its descendants (including all existing snapshots) will be
 backed up under dataset 'target/POOLNAME' [on target_host using ssh] where
@@ -34,10 +35,12 @@ set -u
 dryrun=false
 nflg=
 vflg=
-while getopts nv flag; do
+filter=
+while getopts nvf: flag; do
     case $flag in
         n) dryrun=true; nflg="-n";;
         v) vflg="-v";;
+        f) filter="$OPTARG";;
         ?) usage; exit 1;;
     esac
 done
@@ -126,7 +129,7 @@ fi
 [ -z "$remote_snaplist" ] && incremental=false
 
 # list is sorted by creation date, return the first matching snap
-last=$(echo "$local_snaplist" | head -1)
+last=$(echo "$local_snaplist" | grep "@.*$filter" | head -1)
 lastsnap="${last#*@}"
 if [ -z "$last" ]; then
     echo "\
