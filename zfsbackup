@@ -70,14 +70,11 @@ before retrying." >&2
         $dryrun || zfs release -r $HOLD_TAG $last
     else
         echo "\
-Incremental backup failed (possibly partially). Recovery will be attempted on
-next run by sending all intermediate snapshots after this failed run's
-incremental source
-    $from
-Keeping local holds on:
+Incremental backup failed (possibly partially). Keeping local holds on:
     ${dataset}@${fromsnap}
     $last
-- the latter can be manually released after successful recovery run." >&2
+To recover, destroy any possible snapshots created after the held incremental
+source on target host." >&2
     fi
     exit 1
 }
@@ -165,8 +162,6 @@ snapshots (must be held with '$HOLD_TAG')"
     if [ "$fromsnap" = "$lastsnap" ]; then
         die "fatal: incremental source $fromsnap and $last are the same"
     fi
-    # by default, don't send intermediary snapshots
-    iflag="-i"
     # https://www.illumos.org/issues/4718
     if ! zfs list -Ho name "${dataset}@${fromsnap}" >/dev/null 2>&1; then
         die "\
@@ -182,29 +177,18 @@ is not held; holding it and sending incremental anyway" >&2
         $dryrun || zfs hold -r $HOLD_TAG "${dataset}@${fromsnap}"
     fi
     if [ "$from" != "$remote_latest" ]; then
-        # remote has more recent snapshots than the incremental source;
-        # something is wrong. Either the previous send was incomplete (only
-        # some datasets' snapshots were sent), or something else has modified
-        # the target's snapshots. We can't really distinguish between these
-        # cases before actually trying the send, but we can recover from the
-        # first by either retrying the send with the same snapshot arguments as
-        # before (which would stagger backing up our latest data), or sending
-        # intermediary snapshots as well (which works, but is a bit slower).
-        echo "\
-W: newest remote snapshot
+        die "\
+fatal: newest remote snapshot
     $remote_latest
-does not have the hold tag '${HOLD_TAG}'. Recovery may succeed if this
-discrepancy was caused by the previous send completing partially. Attempting
-recovery by sending intermediate snapshots between
+does not have the hold tag '${HOLD_TAG}'. Clean up snapshots newer than
     $fromsnap
-    and ${last}" >&2
-        iflag="-I"
+from the target host."
     fi
     # NOTE: don't use -F with recv here, since that will prune snapshots from
     # the receiver side (and thus requires destroy permissions there). Instead
     # the receiving dataset should be readonly=on to keep it from getting
     # modified between backups.
-    zfs send $nflg $vflg -R $iflag "$fromsnap" "$last" | on_target zfs recv -ud "${target}/${pool}" || {
+    zfs send $nflg $vflg -R -i "$fromsnap" "$last" | on_target zfs recv -ud "${target}/${pool}" || {
         if $dryrun; then
             echo "dry run; ignoring recv failure." >&2
         else
